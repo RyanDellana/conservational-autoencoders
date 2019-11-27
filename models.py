@@ -48,7 +48,7 @@ def build_encoder_model(filters      = 32,
     x = Flatten()(x)
     z_mean    = Dense(latent_dims, name='z_mean_encode')(x)
     z_log_var = Dense(latent_dims, name='z_log_var_encode')(x)
-    z         = Lambda(sampling, output_shape=(latent_dims,), name='z_encode')([z_mean, z_log_var, input_scale_var])
+    z         = Lambda(sampling, output_shape=(latent_dims,), name='z_encode')([z_mean, z_log_var])
     if z_activation in ['relu', 'sigmoid', 'tanh']:
         z = Activation(z_activation)(z)
     elif z_activation == 'leaky_relu':
@@ -95,7 +95,7 @@ def build_decoder_model(filters=32,
 def build_vae_model(filters      = 32, 
                     latent_dims  = 48, 
                     z_activation = 'leaky_relu',
-                    input_cnls   = 3
+                    input_cnls   = 3,
                     output_cnls  = 3):
     encoder = build_encoder_model(filters      = filters, 
                                   latent_dims  = latent_dims, 
@@ -154,12 +154,13 @@ def build_composite_model(path_pretrained_segmenter    = None,
                           w_loss_deep_feature_conserv  = 0.25,
                           w_loss_output_conserv_person = 0.0,
                           w_loss_output_conserv_car    = 0.0,
-                          w_loss_kl_divergence         = 0.5,
+                          w_loss_fakeness              = 0.25,
+                          w_loss_kl_divergence         = 0.25,
                           filters                      = 32,
                           encode_segmenter_output      = True,
                           encode_segmenter_skips       = False):
     # ---- Define and load segmenter model ----
-    segmenter_training, segmenter = build_segmenter_model(filters = filters, output_cnls = 2)
+    segmenter_training, segmenter = build_segmenter_model(filters = filters, output_cnls = 3)
     if path_pretrained_segmenter:
         segmenter.load_weights(path_pretrained_segmenter)
 
@@ -185,7 +186,7 @@ def build_composite_model(path_pretrained_segmenter    = None,
                                   output_cnls  = 3,
                                   out_act      = 'tanh')
     inputs_vae = Input(shape=(64, 64, in_cnls))
-    z, z_mean_, z_log_var_ = encoder(input_img)
+    z, z_mean_, z_log_var_ = encoder(inputs_vae)
     decoder_output = decoder(z)
     vae = Model([inputs_vae], [decoder_output, z_mean_, z_log_var_], name='vae')
     if path_pretrained_encoder:
@@ -196,6 +197,7 @@ def build_composite_model(path_pretrained_segmenter    = None,
     x = Input(shape=(64, 64, 3))
     (seg_x, features_x, deep_features_x) = segmenter(x)
     seg_x = Lambda(lambda t: (t + 1.0) / 2.0)(seg_x) # Remap from -1.0 -> 1.0 to 0.0 -> 1.0
+    seg_x = Lambda(lambda t: t[:,:,:,0:2])(seg_x) # Remove the "fake-channel"
     if encode_segmenter_output and encode_segmenter_skips:
         vae_input = Concatenate(axis=-1)([x, features_x, deep_features_x, seg_x])
     elif encode_segmenter_output:
@@ -207,6 +209,8 @@ def build_composite_model(path_pretrained_segmenter    = None,
     x_fake, z_mean, z_log_var = vae(vae_input)
     (seg_x_fake, features_x_fake, deep_features_x_fake) = segmenter(x_fake)
     seg_x_fake = Lambda(lambda t: (t + 1.0) / 2.0)(seg_x_fake) # Remap from -1.0 -> 1.0 to 0.0 -> 1.0
+    fake_cnl   = Lambda(lambda t: t[:,:,:,2:3])(seg_x_fake) # Separate out fake-channel.
+    seg_x_fake = Lambda(lambda t: t[:,:,:,0:2])(seg_x_fake) # Remove the "fake-channel"
 
     # http://louistiao.me/posts/implementing-variational-autoencoders-in-keras-beyond-the-quickstart-tutorial/
     def kl_divergence(args):
@@ -249,7 +253,8 @@ def build_composite_model(path_pretrained_segmenter    = None,
         y_true, y_pred = args
         return K.sum(K.minimum(y_true, y_pred), axis=[1,2,3]) / K.sum(K.maximum(y_true, y_pred), axis=[1,2,3])
 
-    seg_g        = Input(shape=(64, 64, 2)) # Segmentation ground truth.
+    seg_g               = Input(shape=(64, 64, 3)) # Segmentation ground truth.
+    seg_g_wout_fake_cnl = Lambda(lambda t: t[:,:,:,0:2])(seg_g) # Remove "fake" channel.
     seg_g_person = Lambda(lambda t: t[:,:,:,0:1])(seg_g)
     seg_g_car    = Lambda(lambda t: t[:,:,:,1:2])(seg_g)
     seg_x_person = Lambda(lambda t: t[:,:,:,0:1])(seg_x)
@@ -263,16 +268,18 @@ def build_composite_model(path_pretrained_segmenter    = None,
     loss_output_conserv_car    = Lambda(mse_img)([seg_x_car, seg_x_fake_car]) # Output conservation error car.
     loss_feature_conserv       = Lambda(mabse_img)([features_x, features_x_fake]) # Feature conservation error.
     loss_deep_feature_conserv  = Lambda(mabse_img)([deep_features_x, deep_features_x_fake]) # Deep feature conservation error.
+    loss_fakeness              = Lambda(lambda t: K.mean(t))(fake_cnl)
     # ^^^ should these be mean-square-error or mean-absolute-error, since they're unbounded functions. TODO
     # ^^^ Also note that we are not comparing apples-to-apples so, output_conserv losses can't be used with feature_conserv losses. TODO
     loss_kl                    = Lambda(kl_divergence)([z_mean, z_log_var]) # KL-divergence loss.
     iou_seg_x_seg_x_fake       = Lambda(intersection_over_union)([seg_x, seg_x_fake])
-    iou_seg_g_seg_x            = Lambda(intersection_over_union)([seg_x_g, seg_x])
-    iou_seg_g_seg_x_fake       = Lambda(intersection_over_union)([seg_x_g, seg_x_fake])
+    iou_seg_g_seg_x            = Lambda(intersection_over_union)([seg_g_wout_fake_cnl, seg_x])
+    iou_seg_g_seg_x_fake       = Lambda(intersection_over_union)([seg_g_wout_fake_cnl, seg_x_fake])
     loss_composite             = K.mean(loss_output_conserv_person * w_loss_output_conserv_person \
                                       + loss_output_conserv_car    * w_loss_output_conserv_car \
                                       + loss_feature_conserv       * w_loss_feature_conserv \
                                       + loss_deep_feature_conserv  * w_loss_deep_feature_conserv \
+                                      + loss_fakeness              * w_loss_fakeness \
                                       + loss_kl                    * w_loss_kl_divergence) # TODO Why mean?
     composite_outputs = [x_fake, 
                          seg_x, 
@@ -281,7 +288,8 @@ def build_composite_model(path_pretrained_segmenter    = None,
                          loss_feature_conserv, 
                          loss_deep_feature_conserv, 
                          loss_output_conserv_person,
-                         loss_output_conserv_car, 
+                         loss_output_conserv_car,
+                         loss_fakeness,
                          loss_kl, 
                          iou_seg_x_seg_x_fake,
                          iou_seg_g_seg_x,
