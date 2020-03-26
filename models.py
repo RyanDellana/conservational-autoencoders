@@ -1,11 +1,16 @@
-import keras
-from keras import backend as K
-from keras.layers import Input, Dense, Conv2D, Flatten, Subtract, Lambda, ReLU
-from keras.layers import Reshape, Conv2DTranspose, Activation, Concatenate
-from keras.layers.advanced_activations import LeakyReLU, ThresholdedReLU
-from keras.models import Model, Sequential
-from keras.losses import mse, binary_crossentropy
-from keras.optimizers import Adam
+from __future__ import absolute_import, division, print_function, unicode_literals
+
+import tensorflow as tf
+
+from tensorflow.keras.layers import Input, Dense, Conv2D, Flatten, Subtract, Lambda, ReLU
+from tensorflow.keras.layers import Reshape, Conv2DTranspose, Activation, Concatenate
+from tensorflow.keras.layers import LeakyReLU, ThresholdedReLU
+
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.losses import mse, binary_crossentropy
+from tensorflow.keras.optimizers import Adam
+
+import numpy as np
 
 
 def sampling(args): # TODO Need to attribute this properly. TODO
@@ -18,10 +23,10 @@ def sampling(args): # TODO Need to attribute this properly. TODO
         z (tensor): sampled latent vector
     """
     z_mean, z_log_var = args
-    batch = K.shape(z_mean)[0]
-    dim = K.int_shape(z_mean)[1]
-    epsilon = K.random_normal(shape=(batch, dim))
-    return z_mean + K.exp(0.5 * z_log_var) * epsilon
+    batch = tf.keras.backend.shape(z_mean)[0]
+    dim = tf.keras.backend.int_shape(z_mean)[1]
+    epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
+    return z_mean + tf.keras.backend.exp(0.5 * z_log_var) * epsilon
 
 
 def build_encoder_model(filters      = 32, 
@@ -186,9 +191,9 @@ def build_composite_model(path_pretrained_segmenter    = None,
                                   output_cnls  = 3,
                                   out_act      = 'tanh')
     inputs_vae = Input(shape=(64, 64, in_cnls))
-    z, z_mean_, z_log_var_ = encoder(inputs_vae)
-    decoder_output = decoder(z)
-    vae = Model([inputs_vae], [decoder_output, z_mean_, z_log_var_], name='vae')
+    z0, z_mean0, z_log_var0 = encoder(inputs_vae)
+    decoder_output = decoder(z0)
+    vae = Model([inputs_vae], [decoder_output, z0, z_mean0, z_log_var0], name='vae')
     if path_pretrained_encoder:
         encoder.load_weights(path_pretrained_encoder)
     if path_pretrained_decoder:
@@ -206,30 +211,46 @@ def build_composite_model(path_pretrained_segmenter    = None,
         vae_input = Concatenate(axis=-1)([x, features_x, deep_features_x])
     else:
         vae_input = x
-    x_fake, z_mean, z_log_var = vae(vae_input)
+    x_fake, z1, z_mean1, z_log_var1 = vae(vae_input)
     (seg_x_fake, features_x_fake, deep_features_x_fake) = segmenter(x_fake)
     seg_x_fake = Lambda(lambda t: (t + 1.0) / 2.0)(seg_x_fake) # Remap from -1.0 -> 1.0 to 0.0 -> 1.0
     fake_cnl   = Lambda(lambda t: t[:,:,:,2:3])(seg_x_fake) # Separate out fake-channel.
     seg_x_fake = Lambda(lambda t: t[:,:,:,0:2])(seg_x_fake) # Remove the "fake-channel"
 
+    """
     # http://louistiao.me/posts/implementing-variational-autoencoders-in-keras-beyond-the-quickstart-tutorial/
     def kl_divergence(args):
         z_mean_, z_log_var_ = args
-        kl_loss = 1 + z_log_var_ - K.square(z_mean_) - K.exp(z_log_var_)
-        kl_loss = K.sum(kl_loss, axis=-1)
+        kl_loss = 1 + z_log_var_ - tf.keras.backend.square(z_mean_) - tf.keras.backend.exp(z_log_var_)
+        #kl_loss = tf.keras.backend.sum(kl_loss, axis=-1)
+        #kl_loss *= -0.5
+        #kl_loss = tf.keras.backend.mean(kl_loss)
+        kl_loss = tf.keras.backend.sum(kl_loss, axis=[1], keepdims=False)
         kl_loss *= -0.5
-        kl_loss = K.mean(kl_loss)
+        kl_loss = tf.keras.backend.mean(kl_loss, keepdims=True)
+        return kl_loss
+    """
+
+    def kl_divergence(args):
+        def log_normal_pdf(sample, mean, logvar, raxis=1):
+            log2pi = tf.math.log(2.0 * np.pi)
+            return tf.reduce_sum(-0.5 * ((sample - mean) ** 2.0 * tf.exp(-logvar) + logvar + log2pi), axis=raxis)
+        z_, z_mean_, z_log_var_ = args
+        logpz = log_normal_pdf(z_, 0.0, 0.0)
+        logqz_x = log_normal_pdf(z_, z_mean_, z_log_var_)
+        #kl_loss = -tf.reduce_mean(logpz - logqz_x) # complains it can't concatenate over batch dimension.
+        kl_loss = -(logpz - logqz_x)
         return kl_loss
 
     def mse_img(args):
         """ Mean square error. Used for bounded functions. """
         x_, x_fake_ = args
-        return K.mean(K.square(x_ - x_fake_))
+        return tf.keras.backend.mean(tf.keras.backend.square(x_ - x_fake_), axis=[1,2,3], keepdims=False)
 
     def mabse_img(args):
         """ Mean absolute error. Used for unbounded functions. """
         x_, x_fake_ = args
-        return K.mean(K.abs(x_ - x_fake_))
+        return tf.keras.backend.mean(tf.keras.backend.abs(x_ - x_fake_), axis=[1,2,3], keepdims=False)
 
     def mse_amm_img(args):
         """ Attention-map-modulated mean square error 
@@ -238,7 +259,7 @@ def build_composite_model(path_pretrained_segmenter    = None,
             attn_map needs to be of shape (64, 64, 1)
         """
         x_, x_fake_, attn_map = args
-        return K.mean(K.square((x_ - x_fake_) * attn_map))
+        return tf.keras.backend.mean(tf.keras.backend.square((x_ - x_fake_) * attn_map), axis=[1,2,3], keepdims=False)
 
     def mabse_amm_img(args):
         """ Attention-map-modulated mean square error 
@@ -247,20 +268,20 @@ def build_composite_model(path_pretrained_segmenter    = None,
             attn_map needs to be of shape (64, 64, 1)
         """
         x_, x_fake_, attn_map = args
-        return K.mean(K.abs((x_ - x_fake_) * attn_map))
+        return tf.keras.backend.mean(tf.keras.backend.abs((x_ - x_fake_) * attn_map), axis=[1,2,3], keepdims=False)
 
     def intersection_over_union(args): # TODO Is there a better way to do axis=[1,2,3]?
         y_true, y_pred = args
-        return K.sum(K.minimum(y_true, y_pred), axis=[1,2,3]) / K.sum(K.maximum(y_true, y_pred), axis=[1,2,3])
+        return tf.keras.backend.sum(tf.keras.backend.minimum(y_true, y_pred), axis=[1,2,3]) / tf.keras.backend.sum(tf.keras.backend.maximum(y_true, y_pred), axis=[1,2,3])
 
-    seg_g               = Input(shape=(64, 64, 3)) # Segmentation ground truth.
-    seg_g_wout_fake_cnl = Lambda(lambda t: t[:,:,:,0:2])(seg_g) # Remove "fake" channel.
-    seg_g_person = Lambda(lambda t: t[:,:,:,0:1])(seg_g)
-    seg_g_car    = Lambda(lambda t: t[:,:,:,1:2])(seg_g)
-    seg_x_person = Lambda(lambda t: t[:,:,:,0:1])(seg_x)
-    seg_x_car    = Lambda(lambda t: t[:,:,:,1:2])(seg_x)
-    seg_x_fake_person = Lambda(lambda t: t[:,:,:,0:1])(seg_x_fake)
-    seg_x_fake_car    = Lambda(lambda t: t[:,:,:,1:2])(seg_x_fake)
+    seg_g                      = Input(shape=(64, 64, 3)) # Segmentation ground truth.
+    seg_g_wout_fake_cnl        = Lambda(lambda t: t[:,:,:,0:2])(seg_g) # Remove "fake" channel.
+    seg_g_person               = Lambda(lambda t: t[:,:,:,0:1])(seg_g)
+    seg_g_car                  = Lambda(lambda t: t[:,:,:,1:2])(seg_g)
+    seg_x_person               = Lambda(lambda t: t[:,:,:,0:1])(seg_x)
+    seg_x_car                  = Lambda(lambda t: t[:,:,:,1:2])(seg_x)
+    seg_x_fake_person          = Lambda(lambda t: t[:,:,:,0:1])(seg_x_fake)
+    seg_x_fake_car             = Lambda(lambda t: t[:,:,:,1:2])(seg_x_fake)
     loss_re                    = Lambda(mabse_img)([x, x_fake]) # Reconstruction error.
     loss_ammre_person          = Lambda(mabse_amm_img)([x, x_fake, seg_x_person])
     loss_ammre_car             = Lambda(mabse_amm_img)([x, x_fake, seg_x_car])
@@ -268,23 +289,23 @@ def build_composite_model(path_pretrained_segmenter    = None,
     loss_output_conserv_car    = Lambda(mse_img)([seg_x_car, seg_x_fake_car]) # Output conservation error car.
     loss_feature_conserv       = Lambda(mabse_img)([features_x, features_x_fake]) # Feature conservation error.
     loss_deep_feature_conserv  = Lambda(mabse_img)([deep_features_x, deep_features_x_fake]) # Deep feature conservation error.
-    loss_fakeness              = Lambda(lambda t: K.mean(t))(fake_cnl)
+    loss_fakeness              = Lambda(lambda t: tf.keras.backend.mean(t, axis=[1,2,3], keepdims=False))(fake_cnl)
     # ^^^ should these be mean-square-error or mean-absolute-error, since they're unbounded functions. TODO
     # ^^^ Also note that we are not comparing apples-to-apples so, output_conserv losses can't be used with feature_conserv losses. TODO
-    loss_kl                    = Lambda(kl_divergence)([z_mean, z_log_var]) # KL-divergence loss.
+    loss_kl                    = Lambda(kl_divergence)([z1, z_mean1, z_log_var1]) # KL-divergence loss.
     iou_seg_x_seg_x_fake       = Lambda(intersection_over_union)([seg_x, seg_x_fake])
     iou_seg_g_seg_x            = Lambda(intersection_over_union)([seg_g_wout_fake_cnl, seg_x])
     iou_seg_g_seg_x_fake       = Lambda(intersection_over_union)([seg_g_wout_fake_cnl, seg_x_fake])
-    loss_composite             = K.mean(loss_output_conserv_person * w_loss_output_conserv_person \
-                                      + loss_output_conserv_car    * w_loss_output_conserv_car \
-                                      + loss_feature_conserv       * w_loss_feature_conserv \
-                                      + loss_deep_feature_conserv  * w_loss_deep_feature_conserv \
-                                      + loss_fakeness              * w_loss_fakeness \
-                                      + loss_kl                    * w_loss_kl_divergence) # TODO Why mean?
+    loss_composite             = tf.keras.backend.mean(loss_output_conserv_person * w_loss_output_conserv_person \
+                                                    + loss_output_conserv_car     * w_loss_output_conserv_car \
+                                                    + loss_feature_conserv        * w_loss_feature_conserv \
+                                                    + loss_deep_feature_conserv   * w_loss_deep_feature_conserv \
+                                                    + loss_fakeness               * w_loss_fakeness \
+                                                    + loss_kl                     * w_loss_kl_divergence) # TODO Why mean?
     composite_outputs = [x_fake, 
-                         seg_x, 
-                         seg_x_fake, 
-                         loss_re, 
+                         seg_x,
+                         seg_x_fake,
+                         loss_re,
                          loss_feature_conserv, 
                          loss_deep_feature_conserv, 
                          loss_output_conserv_person,
@@ -299,5 +320,5 @@ def build_composite_model(path_pretrained_segmenter    = None,
     composite.summary()
     composite.compile(optimizer = Adam(0.0001, 0.5))
     return segmenter_training, vae, encoder, decoder, composite
-
+    
 

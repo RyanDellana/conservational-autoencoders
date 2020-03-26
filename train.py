@@ -1,8 +1,4 @@
-"""
-
-"""
-
-from __future__ import print_function, division
+from __future__ import absolute_import, division, print_function, unicode_literals
 
 import sys, os
 
@@ -12,7 +8,8 @@ import sys, os
 #os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # see issue #152
 #os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
 
-import keras
+import tensorflow as tf
+
 import numpy as np
 import pickle
 import cv2
@@ -65,6 +62,8 @@ def train(save_path,
     x_val   = x_val * 2.0 - 1.0
     y_train = y_train * 2.0 - 1.0
     y_val   = y_val * 2.0 - 1.0
+    print('y_train.shape =', y_train.shape)
+    print('y_val.shape =', y_val.shape)
     # Add third "fake" channel to the y labels.
     y_train = np.concatenate((y_train, np.ones((y_train.shape[0],64,64,1))*-1), axis=-1)
     y_val   = np.concatenate((y_val, np.ones((y_val.shape[0],64,64,1))*-1), axis=-1)
@@ -95,14 +94,17 @@ def train(save_path,
             print('batch', idx_batch)
             from_, to_ = idx_batch*batch_size, (idx_batch+1)*batch_size
             x_batch, y_batch = x_train[from_:to_], y_train[from_:to_]
+            print("x_batch.shape =", x_batch.shape)
             print('composite.predict for adversarial augmentation...')
             ret = composite.predict([x_batch[0:16], y_batch[0:16]])
             x_fake, seg_x, seg_x_fake = ret[0:3] 
             loss_re, loss_feature_conserv, loss_deep_feature_conserv = ret[3:6]
             loss_output_conserv_person, loss_output_conserv_car, loss_fakeness = ret[6:9]
             loss_kl, iou_seg_x_seg_x_fake, iou_seg_g_seg_x, iou_seg_g_seg_x_fake = ret[9:]
-            # loss_re, loss_ammre, loss_attn = np.mean(loss_re), np.mean(loss_ammre), np.mean(loss_attn)
-            # iou_mean_x, iou_mean_fake = np.mean(iou_attn_x), np.mean(iou_attn_fake)
+            print('loss_re =', np.mean(loss_re))
+            print('loss_kl =', np.mean(loss_kl))
+            print('loss_feature_conserv =', np.mean(loss_feature_conserv))
+            print('loss_deep_feature_conserv =', np.mean(loss_deep_feature_conserv))
             # Replace 2 images with fake versions
             pass
             # Use the other 14 to augment their images with a random blend. (i.e. horizontal or vertical line merge)
@@ -126,8 +128,8 @@ def train(save_path,
             encoder.save_weights(save_path+'/model_saves/encoder_weights.h5')
             decoder.save_weights(save_path+'/model_saves/decoder_weights.h5')
             composite_best = comp_loss
-        x_test_batch = x_test[0:64]
-        y_test_batch = y_test[0:64]
+        x_test_batch = x_val[0:64]
+        y_test_batch = y_val[0:64]
         ret = composite.predict([x_test_batch, y_test_batch])
         x_fake, seg_x, seg_x_fake = ret[0:3] 
         loss_re, loss_feature_conserv, loss_deep_feature_conserv = ret[3:6]
@@ -157,7 +159,7 @@ if __name__ == '__main__':
           w_loss_output_conserv_person = 0.0,
           w_loss_output_conserv_car    = 0.0,
           w_loss_fakeness              = 0.25,
-          w_loss_kl_divergence         = 0.25,
+          w_loss_kl_divergence         = 0.0,
           encode_segmenter_output      = True,
           encode_segmenter_skips       = False,
           path_pretrained_segmenter    = None,
