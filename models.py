@@ -100,72 +100,116 @@ class CVAE(Model):
 # ==============================================
 
 class Sampling(Layer):
-    """Uses (z_mean, z_log_var) to sample z, the vector encoding a digit."""
 
     def call(self, inputs):
         z_mean, z_log_var = inputs
         batch   = tf.shape(z_mean)[0]
         dim     = tf.shape(z_mean)[1]
-        epsilon = tf.keras.backend.random_normal(shape=(batch, dim))
-        return z_mean + tf.exp(0.5 * z_log_var) * epsilon
+        epsilon = tf.keras.backend.random_normal(shape=(batch, dim), mean=0.0, stddev=1.0)
+        return z_mean + (tf.exp(0.5 * z_log_var) * epsilon)
 
 
 class Encoder(Model):
 
-    def __init__(self, latent_dim=48, name='encoder', **kwargs):
+    def __init__(self, alpha=1.0, name='encoder', **kwargs):
         super(Encoder, self).__init__(name=name, **kwargs)
-        self.conv0  = Conv2D(filters = 32,  kernel_size = 3, strides = (2, 2), activation = 'relu') 
-        self.conv1  = Conv2D(filters = 64,  kernel_size = 3, strides = (2, 2), activation = 'relu') 
-        self.conv2  = Conv2D(filters = 128, kernel_size = 3, strides = (2, 2), activation = 'relu')
-        self.conv3  = Conv2D(filters = 128, kernel_size = 3, strides = (2, 2), activation = 'relu')
+        self.conv0  = Conv2D(filters = int(32*alpha),  kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv1  = Conv2D(filters = int(64*alpha),  kernel_size = 5, strides = 2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv3  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv4  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv5  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
         self.flat   = Flatten()
-        self.dense_mean    = Dense(latent_dim)
-        self.dense_log_var = Dense(latent_dim)
-        self.sampling      = Sampling()
+        self.dense0 = Dense(int(128*alpha), activation = LeakyReLU(alpha=0.2))
+        self.dense1 = Dense(48, activation = None)
 
     def call(self, inputs):
-        x = self.conv0(inputs) # (32, 32, 32)
-        x = self.conv1(x)      # (16, 16, 64)
-        x = self.conv2(x)      # (8, 8, 128)
-        x = self.conv3(x)      # (4, 4, 128)
-        x = self.flat(x)
-        z_mean    = self.dense_mean(x)
-        z_log_var = self.dense_log_var(x)
-        z         = self.sampling((z_mean, z_log_var))
+        x = self.conv0(inputs) # (64, 64, 32)   CRF = 5
+        x = self.conv1(x)      # (64, 64, 64)   CRF = 9
+        x = self.conv2(x)      # (32, 32, 128)  CRF = 13
+        x = self.conv3(x)      # (32, 32, 128)  CRF = 21
+        x = self.conv4(x)      # (16, 16, 128)  CRF = 29
+        x = self.conv5(x)      # (16, 16, 128)  CRF = 45
+        x = self.flat(x)       # (32768, )
+        x = self.dense0(x)     # (128, )
+        z = self.dense1(x)
+        return z
+
+
+class Encoder_VAE(Model):
+
+    def __init__(self, alpha=1.0, name='encoder', **kwargs):
+        super(Encoder_VAE, self).__init__(name=name, **kwargs)
+        self.conv0  = Conv2D(filters = int(32*alpha),  kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv1  = Conv2D(filters = int(64*alpha),  kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2)) 
+        self.conv2  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv3  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv4  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv5  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv6  = Conv2D(filters = int(128*alpha), kernel_size = 5, strides = 1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.flat   = Flatten()
+        self.dense0 = Dense(int(128*alpha), activation = LeakyReLU(alpha=0.2))
+        self.dense_mean    = Dense(48, activation = None)
+        self.dense_log_var = Dense(48, activation = None)
+        self.sampling     = Sampling()
+
+    def call(self, inputs):
+        x = self.conv0(inputs) # (64, 64, 32)   CRF = 5
+        x = self.conv1(x)      # (64, 64, 64)   CRF = 9
+        x = self.conv2(x)      # (32, 32, 128)  CRF = 13
+        x = self.conv3(x)      # (32, 32, 128)  CRF = 21
+        x = self.conv4(x)      # (16, 16, 128)  CRF = 29
+        x = self.conv5(x)      # (16, 16, 128)  CRF = 45
+        x = self.conv6(x)      # (16, 16, 128)  CRF = 61
+        x = self.flat(x)       # (32768, )
+        x = self.dense0(x)     # (128, )
+        z_mean    = self.dense_mean(x)    # (48, )
+        z_log_var = self.dense_log_var(x) # (48, )
+        #z_mean    = K.clip(min_value=0.0, max_value=100.0, x=z_mean)
+        #z_log_var = K.clip(min_value=0.0, max_value=100.0, x=z_log_var)
+        z         = self.sampling((z_mean, z_log_var)) # (48, )
         return z_mean, z_log_var, z
 
 
 class Decoder(Model):
-    """Converts z, the encoded digit vector, back into a readable digit."""
 
-    def __init__(self, name='decoder', **kwargs):
+    def __init__(self, alpha=1.0, name='decoder', **kwargs):
         super(Decoder, self).__init__(name=name, **kwargs)
-        self.dense0  = Dense(4*4*128, activation='relu')
-        self.reshape = Reshape((4, 4, 128))
-        self.conv2dtrans0 = Conv2DTranspose(128, (3,3), strides=(2,2), padding='same', activation='relu') 
-        self.conv2dtrans1 = Conv2DTranspose(64,  (3,3), strides=(2,2), padding='same', activation='relu')
-        self.conv2dtrans2 = Conv2DTranspose(32,  (3,3), strides=(2,2), padding='same', activation='relu')
-        self.conv2dtrans3 = Conv2DTranspose(32,  (3,3), strides=(2,2), padding='same', activation='relu')
-        self.conv2dtrans_out = Conv2DTranspose(3, (3,3), strides=(1,1), padding='same', activation='tanh')
+        self.dense0  = Dense(int(128*alpha), activation = LeakyReLU(alpha=0.2))
+        self.dense1  = Dense(int(128*16*16*alpha), activation = LeakyReLU(alpha=0.2))
+        self.reshape = Reshape((16, 16, 128))
+        self.conv2dtrans0    = Conv2DTranspose(int(128*alpha), kernel_size = 5, strides=1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans1    = Conv2DTranspose(int(128*alpha), kernel_size = 5, strides=1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans2    = Conv2DTranspose(int(128*alpha), kernel_size = 5, strides=2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans3    = Conv2DTranspose(int(128*alpha), kernel_size = 5, strides=1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans4    = Conv2DTranspose(int(64*alpha),  kernel_size = 5, strides=2, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans5    = Conv2DTranspose(int(32*alpha),  kernel_size = 5, strides=1, padding='same', activation = LeakyReLU(alpha=0.2))
+        self.conv2dtrans_out = Conv2DTranspose(3,              kernel_size = 5, strides=1, padding='same', activation = 'tanh')
 
     def call(self, inputs):
         x = self.dense0(inputs)
-        x = self.reshape(x)
-        x = self.conv2dtrans0(x)      # (8, 8, 128)
-        x = self.conv2dtrans1(x)      # (16, 16, 64)
-        x = self.conv2dtrans2(x)      # (32, 32, 32)
-        x = self.conv2dtrans3(x)      # (64, 64, 32)
+        x = self.dense1(x)
+        x = self.reshape(x)      # (4, 4, 3)
+        x = self.conv2dtrans0(x)      # (16, 16, 128)
+        x = self.conv2dtrans1(x)      # (16, 16, 128)
+        x = self.conv2dtrans2(x)      # (16, 16, 128)
+        x = self.conv2dtrans3(x)      # (32, 32, 128)
+        x = self.conv2dtrans4(x)      # (32, 32, 64)
+        x = self.conv2dtrans5(x)      # (64, 64, 32)
         out = self.conv2dtrans_out(x) # (64, 64, 3)
         return out
 
 
 class VariationalAutoEncoder(Model):
-    """Combines the encoder and decoder into an end-to-end model for training."""
 
-    def __init__(self, name='autoencoder', **kwargs):
+    def __init__(self, alpha=1.0, name='autoencoder', **kwargs):
         super(VariationalAutoEncoder, self).__init__(name=name, **kwargs)
-        self.encoder = Encoder()
-        self.decoder = Decoder()
+        self.encoder = Encoder_VAE(alpha=alpha)
+        self.decoder = Decoder(alpha=alpha)
+
+    #def log_normal_pdf(self, sample, mean, logvar, raxis=1):
+    #    log2pi = tf.math.log(2.0 * np.pi)
+    #    return tf.reduce_sum(-0.5 * ((sample - mean) ** 2.0 * tf.exp(-logvar) + logvar + log2pi), axis=raxis)
 
     def call(self, inputs):
         z_mean, z_log_var, z = self.encoder(inputs)
@@ -176,11 +220,158 @@ class VariationalAutoEncoder(Model):
         # Add KL divergence regularization loss.
         kl_loss = -0.5 * tf.reduce_mean(z_log_var - tf.square(z_mean) - tf.exp(z_log_var) + 1)
         self.add_loss(kl_loss)
+        #logpz   = self.log_normal_pdf(z, 0.0, 0.0)
+        #logqz_x = self.log_normal_pdf(z, z_mean, z_log_var)
+        #kl_loss = logpz - logqz_x
+        self.add_loss(kl_loss)
         return reconstructed
 
-# ===========================================
 
-    
+class RegularAutoEncoder(Model):
+
+    def __init__(self, alpha=1.0, name='autoencoder', **kwargs):
+        super(RegularAutoEncoder, self).__init__(name=name, **kwargs)
+        self.encoder = Encoder(alpha=alpha)
+        self.decoder = Decoder(alpha=alpha)
+
+    def call(self, inputs):
+        z = self.encoder(inputs)
+        reconstructed = self.decoder(z)
+        re_loss = tf.keras.losses.MeanSquaredError()(inputs, reconstructed)
+        self.add_loss(re_loss)
+        return reconstructed
+
+
+class Segmenter(Model):
+
+    # TODO Suggested improvements:
+    # > Use Transposed Convolution instead of UpSampling2D.
+    def __init__(self, output_cnls=3, alpha=1.0, name='segmenter', **kwargs):
+        super(Segmenter, self).__init__(name=name, **kwargs)
+        self.conv0   = Conv2D(int(8*alpha), (1,1), strides=1, padding='same', activation=LeakyReLU(alpha=0.2), name='conv0')
+        self.dc0     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc0')
+        self.conv1   = Conv2D(int(16*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv1') # CRF = 3x3
+        self.dc1     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc1')
+        self.conv2   = Conv2D(int(16*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv2') # CRF = 5x5
+        self.dc2     = DepthwiseConv2D(kernel_size=3, strides=2, padding='same', name='dc2')
+        self.conv3   = Conv2D(int(32*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv3') # CRF = 7x7
+        self.dc3     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc3')
+        self.conv4   = Conv2D(int(32*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv4') # CRF = 11x11
+        self.dc4     = DepthwiseConv2D(kernel_size=3, strides=2, padding='same', name='dc4')
+        self.conv5   = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv5') # CRF = 15x15
+        self.dc5     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc5')
+        self.conv6   = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv6') # CRF = 23x23
+        self.dc6     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc6')
+        self.conv7   = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv7') # CRF = 31x31
+        self.dc7     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc7')
+        self.conv8   = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv8') # CRF = 39x39
+        self.dc8     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc8')
+        self.conv9   = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv9') # CRF = 47x47
+        self.dc9     = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc9')
+        self.conv10  = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv10') # CRF = 55x55
+        self.dc10    = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc10')
+        self.conv11  = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv11') # CRF = 63x63
+        self.dc11    = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc11')
+        self.conv12  = Conv2D(int(64*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv12') # CRF = 71x71
+        #self.upsamp0 = UpSampling2D(size=(2,2), interpolation='bilinear') # upsample to 32x32x64
+        self.upsamp0 = Conv2DTranspose(int(64*alpha), (3,3), strides=(2,2), padding='same', activation=LeakyReLU(alpha=0.2))
+        self.dc12    = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc12')
+        self.conv13  = Conv2D(int(32*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv13')
+        #self.upsamp1 = UpSampling2D(size=(2,2), interpolation='bilinear') # upsample to 64x64x32
+        self.upsamp1 = Conv2DTranspose(int(32*alpha), (3,3), strides=(2,2), padding='same', activation=LeakyReLU(alpha=0.2))
+        self.dc13    = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc13')
+        self.conv14  = Conv2D(int(16*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv14')
+        self.cat7    = Concatenate(axis=-1) # concatenate skip connections
+        self.dc14    = DepthwiseConv2D(kernel_size=3, strides=1, padding='same', name='dc14')
+        self.conv15  = Conv2D(int(16*alpha), (1,1), padding='same', activation=LeakyReLU(alpha=0.2), name='conv15')
+        self.conv16  = Conv2D(output_cnls, (1,1), padding='same', activation='tanh', name='conv16')
+
+    def call(self, inputs):
+        layer_seq = [self.conv0, self.dc0, self.conv1, self.dc1, self.conv2]
+        x = inputs
+        for layer in layer_seq:
+            x = layer(x)
+        conv2 = x
+        layer_seq = [self.dc2, self.conv3, self.dc3, self.conv4, self.dc4, self.conv5, self.dc5, self.conv6, self.dc6, 
+                     self.conv7, self.dc7, self.conv8, self.dc8, self.conv9, self.dc9, self.conv10, self.dc10, self.conv11, 
+                     self.dc11, self.conv12, self.upsamp0, self.dc12, self.conv13, self.upsamp1, self.dc13, self.conv14]
+        x = inputs
+        for layer in layer_seq:
+            x = layer(x)
+        conv14 = x
+        x = self.cat7([conv2, conv14])
+        x = self.dc14(x)
+        x = self.conv15(x)
+        output = self.conv16(x)
+        return output, conv2, conv14
+
+
+class Composite(Model):
+
+    def __init__(self, 
+                 output_cnls=3, 
+                 alpha=1.0, 
+                 name='composite', 
+                 encode_segmenter_output = True,
+                 encode_segmenter_skips = False,
+                 **kwargs):
+        super(Composite, self).__init__(name=name, **kwargs)
+        self.encode_segmenter_output = encode_segmenter_output
+        self.encode_segmenter_skips  = encode_segmenter_skips
+        self.segmenter = Segmenter(alpha = alpha, output_cnls = output_cnls, name = 'segmenter')
+        self.ae        = RegularAutoEncoder(alpha = alpha, name = 'autoencoder')
+        self.encoder   = self.ae.encoder
+        self.decoder   = self.ae.decoder
+        # -----------------------------------
+        self.segmenter.trainable = False
+
+    def call(self, inputs):
+        x, seg_g = inputs # TODO Not sure it works this way. TODO 
+        (seg_x_raw, features_x, deep_features_x) = self.segmenter(x)
+        seg_x = seg_x_raw[:,:,:,0:2] # Remove the "fake-channel"
+        if self.encode_segmenter_output and self.encode_segmenter_skips:
+            ae_input = tf.concat([x, features_x, deep_features_x, seg_x], axis=-1)
+        elif self.encode_segmenter_output:
+            ae_input = tf.concat([x, seg_x], axis=-1)
+        elif self.encode_segmenter_skips:
+            ae_input = tf.concat([x, features_x, deep_features_x], axis=-1)
+        else:
+            ae_input = x
+        z = self.encoder(ae_input)
+        x_fake = self.decoder(z)
+        (seg_x_raw_fake, features_x_fake, deep_features_x_fake) = self.segmenter(x_fake)
+        seg_x_fake = seg_x_raw_fake[:,:,:,0:2] # Remove the "fake-channel"
+        fake_cnl   = seg_x_raw_fake[:,:,:,2:3] # Separate out fake-channel.
+        seg_g_wout_fake_cnl = seg_g[:,:,:,0:2] # Remove "fake" channel.
+        seg_g_person        = seg_g[:,:,:,0:1]
+        seg_g_car           = seg_g[:,:,:,1:2]
+        seg_x_person        = seg_x[:,:,:,0:1]
+        seg_x_car           = seg_x[:,:,:,1:2]
+        seg_x_fake_person   = seg_x_fake[:,:,:,0:1]
+        seg_x_fake_car      = seg_x_fake[:,:,:,1:2]
+        loss_re             = tf.keras.losses.MeanSquaredError()(x, x_fake) # Reconstruction error.
+        #loss_ammre_person  = Lambda(mabse_amm_img)([x, x_fake, seg_x_person])
+        #loss_ammre_car     = Lambda(mabse_amm_img)([x, x_fake, seg_x_car])
+        loss_output_conserv_person = tf.keras.losses.MeanSquaredError()(seg_x_person, seg_x_fake_person) # Output conservation error person.
+        loss_output_conserv_car    = tf.keras.losses.MeanSquaredError()(seg_x_car, seg_x_fake_car) # Output conservation error car.
+        #loss_feature_conserv       = tf.keras.losses.MeanSquaredError()([features_x, features_x_fake]) # Feature conservation error.
+        #loss_deep_feature_conserv  = tf.keras.losses.MeanSquaredError()([deep_features_x, deep_features_x_fake]) # Deep feature conservation error.
+        loss_fakeness              = K.mean((fake_cnl*fake_cnl), axis=[1,2,3], keepdims=False) # Error for producing a fake-looking image.
+        # ^^^ Also note that we are not comparing apples-to-apples so, output_conserv losses can't be used with feature_conserv losses. TODO
+        # ^^^ We can't, so instead we should just leave out feature losses for this paper. There's a way to normalize feature losses that involves
+        #     training activation autoencoders that just map the activations directly back to themselves, but use tanh in their latent spaces.
+        #     This opens up a lot of possibilities.
+        iou_seg_x_seg_x_fake = K.sum(K.minimum(seg_x, seg_x_fake), axis=[1,2,3]) / K.sum(K.maximum(seg_x, seg_x_fake), axis=[1,2,3])
+        iou_seg_g_seg_x      = K.sum(K.minimum(seg_g_wout_fake_cnl, seg_x), axis=[1,2,3]) / K.sum(K.maximum(seg_g_wout_fake_cnl, seg_x), axis=[1,2,3])
+        iou_seg_g_seg_x_fake = K.sum(K.minimum(seg_g_wout_fake_cnl, seg_x_fake), axis=[1,2,3]) / K.sum(K.maximum(seg_g_wout_fake_cnl, seg_x_fake), axis=[1,2,3])
+        self.add_loss(loss_re)
+        self.add_loss(loss_output_conserv_person)
+        self.add_loss(loss_output_conserv_car)
+        self.add_loss(loss_fakeness)
+        self.add_loss(iou_seg_x_seg_x_fake)
+        self.add_loss(iou_seg_g_seg_x)
+        self.add_loss(iou_seg_g_seg_x_fake)
+        return x_fake, seg_x_raw, seg_x_raw_fake
 
 
 def sampling(args): # TODO Need to attribute this properly. TODO
@@ -557,6 +748,11 @@ def build_composite_model(path_pretrained_segmenter    = None,
     composite.compile(optimizer = Adam(0.0001, 0.5))
     return segmenter_training, vae, encoder, decoder, composite
 
+
+
+
+
+# ==========================================================================================
 
 def build_segmenter_model_aspp(alpha=1, output_cnls=3):
     inputs  = Input(shape=(128,128,3))
